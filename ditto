@@ -1,0 +1,130 @@
+#!/usr/bin/env ruby
+
+require "slack"
+require "yaml"
+require 'optparse'
+require 'ostruct'
+
+USER_CACHE_FILE = 'user_cache.yml'
+CHANNEL_CACHE_FILE = 'channel_cache.yml'
+
+Slack.configure do |config|
+  config.token = YAML.load_file('config.yml')['slack_token']
+end
+
+class CLI
+  REQUIRED = %w{channel user text}
+
+  def self.parse(args)
+    options = OpenStruct.new
+
+    opt_parser = OptionParser.new do |opts|
+      opts.banner = "Usage: ditto.rb [options]"
+      opts.separator ""
+
+      opts.on("-c", "--channel CHANNEL", "Message will be sent to CHANNEL") { |c| options.channel = c }
+      opts.on("-u", "--user USER", "Message will be sent as USER") { |u| options.user = u }
+      opts.on("-t", "--text TEXT", "The body of the message") { |m| options.text = m }
+
+      opts.separator ""
+
+      opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+      end
+    end
+
+    opt_parser.parse!(args)
+
+    self.parse(['-h']) unless REQUIRED.all? { |r| options.respond_to?(r) }
+
+    options
+  end
+end
+
+
+class User
+  class << self
+    def build_user_cache
+      puts "Building user cache"
+
+      members = Slack.users_list.fetch('members').map do |member|
+        {
+          name: member.fetch('name', ''),
+          real_name: member.fetch('real_name', ''),
+          avatar: member.fetch('profile').fetch('image_192', '')
+        }
+      end
+      File.open(USER_CACHE_FILE,'w') do |handle|
+        handle.write(members.to_yaml)
+      end
+      members
+    end
+
+    def users
+      YAML.load_file(USER_CACHE_FILE)
+    rescue Errno::ENOENT
+      build_user_cache
+    end
+
+    def get(username)
+      users.detect do |user|
+        user[:name] == username
+      end || raise(ArgumentError.new("no such user: #{username}"))
+    end
+  end
+end
+
+
+class Channel
+  class << self
+    def build_channel_cache
+      puts "Building channel cache"
+
+      members = Slack.channels_list.fetch('channels').map do |channel|
+        {
+          name: channel.fetch('name', ''),
+        }
+      end
+      File.open(CHANNEL_CACHE_FILE,'w') do |handle|
+        handle.write(members.to_yaml)
+      end
+      members
+    end
+
+    def channels
+      YAML.load_file(CHANNEL_CACHE_FILE)
+    rescue Errno::ENOENT
+      build_channel_cache
+    end
+
+    def get(channelname)
+      channels.detect do |channel|
+        channel[:name] == channelname
+      end || raise(ArgumentError.new("no such channel: #{channelname}"))
+    end
+  end
+end
+
+
+class Message
+  class << self
+    def send(opts)
+      user = User.get(opts.user)
+      channel = Channel.get(opts.channel)
+      message = {
+        text: opts.text,
+        channel: "##{channel[:name]}",
+        icon_url: user[:avatar],
+        username: user[:real_name]
+      }
+      response = Slack.chat_postMessage(message)
+      raise response["error"] unless response["ok"]
+      puts "sent!"
+    rescue => e
+      puts e
+    end
+  end
+end
+
+Message.send(CLI.parse(ARGV))
